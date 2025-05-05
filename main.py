@@ -1,5 +1,6 @@
 from flask import Flask
 import gspread
+from gspread.utils import rowcol_to_a1
 from oauth2client.service_account import ServiceAccountCredentials
 import requests
 from bs4 import BeautifulSoup
@@ -89,11 +90,29 @@ def run_scraper():
     # Process each group
     for root_url, listing_ids in grouped_listings.items():
         results = get_listing_pages(root_url, listing_ids)
-        for lid, result in results.items():
-            row_num = listing_to_row.get(lid)
-            if row_num:
-                worksheet.update_cell(row_num, page_number_idx + 1, str(result))
-time.sleep(1)
+        from gspread.utils import rowcol_to_a1
+
+# Collect all cell updates
+updates = []
+
+for lid, result in results.items():
+    row_num = listing_to_row.get(lid)
+    if row_num:
+        cell_label = rowcol_to_a1(row_num, page_number_idx + 1)
+        updates.append({
+            'range': cell_label,
+            'values': [[str(result)]]
+        })
+
+# Perform one batch update instead of one-by-one writes
+if updates:
+    worksheet.batch_update([
+        {
+            "range": update['range'],
+            "majorDimension": "ROWS",
+            "values": update['values']
+        } for update in updates
+    ])
 
     print("✅ Scraper completed.")
 
