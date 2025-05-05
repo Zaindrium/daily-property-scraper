@@ -93,7 +93,7 @@ def run_scraper():
             row_num = listing_to_row.get(lid)
             if row_num:
                 worksheet.update_cell(row_num, page_number_idx + 1, str(result))
-                time.sleep(1)  # avoid rate limits
+time.sleep(1)
 
     print("✅ Scraper completed.")
 
