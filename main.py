@@ -1,91 +1,51 @@
-import os
-import time
-import json
+from flask import Flask
 import gspread
-import requests
-from bs4 import BeautifulSoup
-from flask import Flask, jsonify
 from oauth2client.service_account import ServiceAccountCredentials
-from gspread.utils import rowcol_to_a1
+from scraper import get_page_number_for_property24
 
 app = Flask(__name__)
 
-# Google Sheets setup using environment variable
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-if not creds_json:
-    raise ValueError("GOOGLE_CREDENTIALS environment variable not set")
-creds_dict = json.loads(creds_json)
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(creds)
+# Root route to confirm app is running
+@app.route('/')
+def home():
+    return "✅ Property24 Scraper is live. Visit /trigger to run the update."
 
-# Configuration
-SHEET_NAME = 'Listing Tracker'
-WORKSHEET_NAME = 'Property 24'
-BASE_URL = "https://www.property24.com/for-sale/eastern-cape/port-elizabeth/1/p{}?sp=nr"
-
-def find_listing_page(listing_id):
-    for page in range(1, 50):  # check first 50 pages
-        url = BASE_URL.format(page)
-        try:
-            response = requests.get(url, timeout=10)
-            if response.status_code != 200:
-                print(f"Failed to load page {page}: Status {response.status_code}")
-                continue
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-            for tag in soup.find_all("a", href=True):
-                if listing_id in tag["href"]:
-                    return page
-        except Exception as e:
-            print(f"Error on page {page}: {e}")
-        time.sleep(1)
-    return "Not Found"
-
+# Main trigger route
+@app.route('/trigger')
 def run_scraper():
     try:
-        spreadsheet = client.open(SHEET_NAME)
-        worksheet = spreadsheet.worksheet(WORKSHEET_NAME)
-        records = worksheet.get_all_records()
-        headers = worksheet.row_values(1)
+        # Authorize Google Sheets
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+        client = gspread.authorize(creds)
 
-        listing_id_idx = headers.index("Listing ID")
-        page_number_idx = headers.index("Page Number")
+        # Open Google Sheet
+        sheet = client.open("Listings Page Tracker").worksheet("Property 24")
+        data = sheet.get_all_records()
 
-        updates = []
+        # Prepare header and column indexes
+        header = sheet.row_values(1)
+        id_index = header.index("Listing ID")
+        page_index = header.index("Page No.") if "Page No." in header else len(header) + 1
+        if page_index == len(header) + 1:
+            sheet.update_cell(1, page_index + 1, "Page No.")
 
-        for row_num, record in enumerate(records, start=2):  # Start at row 2 to skip header
-            listing_id = str(record["Listing ID"]).strip()
-
+        # Collect results
+        results = {}
+        for i, row in enumerate(data):
+            listing_id = str(row["Listing ID"]).strip()
             if not listing_id:
                 continue
+            page_number = get_page_number_for_property24(listing_id)
+            results[listing_id] = page_number
+            print(f"✅ {listing_id} found on page {page_number}")
+            sheet.update_cell(i + 2, page_index + 1, page_number)
 
-            page_number = find_listing_page(listing_id)
-            print(f"Listing {listing_id} found on page: {page_number}")
-            cell_address = rowcol_to_a1(row_num, page_number_idx + 1)
-            updates.append({
-                'range': f"{WORKSHEET_NAME}!{cell_address}",
-                'values': [[str(page_number)]]
-            })
-
-        # Batch update
-        if updates:
-            worksheet.spreadsheet.batch_update({
-                'valueInputOption': 'RAW',
-                'data': updates
-            })
-
-        print("✅ Scraper completed and data updated.")
-        return True
+        return "✅ Scraping complete and sheet updated."
 
     except Exception as e:
-        print(f"❌ Error during scraping: {e}")
-        return False
-
-@app.route('/trigger', methods=['GET'])
-def trigger_scraper():
-    success = run_scraper()
-    return jsonify({"status": "success" if success else "error"})
+        print(f"❌ Error: {e}")
+        return f"❌ Error: {str(e)}"
 
 if __name__ == '__main__':
     app.run(debug=True)
